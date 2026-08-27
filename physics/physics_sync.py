@@ -461,6 +461,18 @@ class TimerController:
         self._interaction_pose_hold_until = 0.0
         self._last_interaction_response = 0.0
         self.rigidbody_world, self.previous_rigidbody_enabled = _disable_blender_rigidbody_world(scene)
+        # Idle-CPU optimization: the interaction snapshot scan copies every
+        # tracked pose matrix (~240 timer wakes/sec). A depsgraph_update_post
+        # flag lets tick() skip that scan when nothing in the scene changed;
+        # without an update no tracked matrix can have moved, so the skipped
+        # comparison would always report "no change" anyway.
+        self._scene_dirty = True
+        self._depsgraph_handler = self._on_depsgraph_update
+        bpy.app.handlers.depsgraph_update_post.append(self._depsgraph_handler)
+
+    def _on_depsgraph_update(self, scene, depsgraph):
+        if self.running:
+            self._scene_dirty = True
 
     def tick(self):
         if not self.running:
@@ -486,8 +498,18 @@ class TimerController:
                 return max(0.001, fixed_step * 0.5)
             interaction_kind = "NONE"
             if not is_animation_playing:
-                interaction_kind = self._interaction_change_kind()
-                self._configure_interaction_pose_scope(interaction_kind, now)
+                if self._scene_dirty or self._held_interaction_pose_bones:
+                    interaction_kind = self._interaction_change_kind()
+                    self._configure_interaction_pose_scope(interaction_kind, now)
+                    self._scene_dirty = False
+                else:
+                    # Nothing tracked can have changed since the last scan
+                    # (no depsgraph update arrived), so skip the full pose
+                    # matrix snapshot and only refresh the selection-driven
+                    # fallback scope that `_interaction_change_kind` would
+                    # have produced on its "no change" branch.
+                    interaction_kind = self._interaction_fallback_kind()
+                    self._configure_interaction_pose_scope(interaction_kind, now)
             if self._maybe_interaction_response(now, fixed_step, interaction_kind):
                 _publish_all_performance(self.settings)
                 return 0.001
@@ -675,6 +697,23 @@ class TimerController:
             return "NONE"
         self._last_interaction_pose_bones = filtered_scope
         return "POSE"
+
+    def _interaction_fallback_kind(self):
+        """Selection-driven fallback of ``_interaction_change_kind``.
+
+        Mirrors its "no changed keys" branch exactly: with no depsgraph
+        update since the last scan the matrix comparison is guaranteed to
+        find no changes, so only this fallback scope remains relevant.
+        """
+        self._last_interaction_pose_bones = set()
+        fallback_scope = self._preferred_interaction_pose_scope(prefer_changed=False)
+        if fallback_scope:
+            self._last_interaction_pose_bones = fallback_scope
+            return "POSE"
+        if self._held_interaction_pose_bones:
+            self._last_interaction_pose_bones = set(self._held_interaction_pose_bones)
+            return "POSE"
+        return "NONE"
 
     def _preferred_interaction_pose_scope(self, changed_scope=None, prefer_changed=True):
         active_scope = self._filter_scope_to_input_bones(self._active_pose_bone_scope())
@@ -973,6 +1012,12 @@ class TimerController:
             return
         self.running = False
         self.stopped = True
+        try:
+            handlers = bpy.app.handlers.depsgraph_update_post
+            if self._depsgraph_handler in handlers:
+                handlers.remove(self._depsgraph_handler)
+        except Exception:
+            pass
         try:
             if bpy.app.timers.is_registered(self.timer_callback):
                 bpy.app.timers.unregister(self.timer_callback)

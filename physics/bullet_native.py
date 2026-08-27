@@ -397,15 +397,21 @@ class BulletNative:
             "step",
         )
 
-    def get_body_transforms(self, count):
+    def get_body_transforms(self, count, wanted_indices=None):
         array_type = NativeBodyTransform * count
         array = array_type()
         self._check(
             self.lib.pmx_bullet_get_body_transforms(self.handle, array, count),
             "get_body_transforms",
         )
+        if wanted_indices is not None:
+            wanted = set(wanted_indices)
+        else:
+            wanted = None
         result = {}
         for item in array:
+            if wanted is not None and item.index not in wanted:
+                continue
             quat = Quaternion((item.rotation[3], item.rotation[0], item.rotation[1], item.rotation[2]))
             position = (item.position[0], item.position[1], item.position[2])
             result[item.index] = transforms.pmx_transform_to_blender_matrix(position, quat)

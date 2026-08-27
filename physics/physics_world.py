@@ -234,6 +234,10 @@ class PhysicsWorld:
         self._last_written_bone_targets = {}
         self._last_object_targets = {}
         self._last_root_world = None
+        self._kinematic_cache = None
+        self._kinematic_cache_dirty = True
+        self._kinematic_cache_safe = False
+        self._dynamic_bone_index_cache = None
         self._drag_previous_dynamic_matrices = {}
         self._drag_current_dynamic_matrices = {}
         self._drag_dynamic_blended_indices = set()
@@ -286,6 +290,34 @@ class PhysicsWorld:
         self.model = pmx_data_reader.read_model(context, root)
         self.bone_driver_rigid_indices = self._build_bone_driver_rigid_indices()
         self._build_runtime_cache()
+        # The substep kinematic cache is only provably identical when every
+        # STATIC rigid resolves through its pose bone: the object-matrix
+        # fallback reads rigid.obj.matrix_world, which our own apply stage
+        # rewrites between substeps. With any fallback-path static present
+        # the cache stays disabled and collects recompute as before.
+        self._kinematic_cache_safe = all(
+            rigid.mode != MODE_STATIC
+            or (
+                rigid.bone_name
+                and rigid.bone_offset_matrix is not None
+                and getattr(rigid, "_pmx_cached_pose_bone", None) is not None
+            )
+            for rigid in self.model.rigid_bodies
+        )
+        if self._kinematic_cache_safe:
+            # A bone bound to both a STATIC rigid and a physics-driven
+            # dynamic rigid gets its pose rewritten by the apply stage
+            # between substeps; caching would then serve stale matrices.
+            static_followed_bones = {
+                rigid.bone_name
+                for rigid in self.model.rigid_bodies
+                if rigid.mode == MODE_STATIC and rigid.bone_name
+            }
+            self._kinematic_cache_safe = not (
+                static_followed_bones & set(self.bone_driver_rigid_indices.keys())
+            )
+        self._kinematic_cache = None
+        self._kinematic_cache_dirty = True
         self.performance = _new_performance()
         self.performance.update(
             {
@@ -358,6 +390,10 @@ class PhysicsWorld:
         self._last_written_bone_targets = {}
         self._last_object_targets = {}
         self._last_root_world = None
+        self._kinematic_cache = None
+        self._kinematic_cache_dirty = True
+        self._kinematic_cache_safe = False
+        self._dynamic_bone_index_cache = None
         self._interaction_pose_scope = None
         self.performance = _new_performance()
 
@@ -911,7 +947,18 @@ class PhysicsWorld:
         if dynamic_scope is not None and not dynamic_scope:
             return
 
-        body_matrices = self.native.get_body_transforms(len(self.model.rigid_bodies))
+        body_matrices = self.native.get_body_transforms(
+            len(self.model.rigid_bodies),
+            wanted_indices=self._dynamic_bone_indices(),
+        )
+        # Hoisted once per loop like in `_collect_body_matrices`: one root
+        # inversion instead of one per dynamic-bone rigid.
+        root_inverse = None
+        armature_world = None
+        if self.model.root is not None:
+            root_inverse = self.model.root.matrix_world.inverted_safe()
+        if self.model.armature is not None:
+            armature_world = self.model.armature.matrix_world
         for rigid in self.model.rigid_bodies:
             if rigid.mode != MODE_DYNAMIC_BONE:
                 continue
@@ -920,9 +967,20 @@ class PhysicsWorld:
             previous = body_matrices.get(rigid.index)
             if previous is None:
                 continue
-            current = self._current_body_matrix(rigid)
+            current = self._current_body_matrix(rigid, root_inverse, armature_world)
             self._drag_previous_dynamic_matrices[rigid.index] = previous
             self._drag_current_dynamic_matrices[rigid.index] = current
+
+    def _dynamic_bone_indices(self):
+        cached = getattr(self, "_dynamic_bone_index_cache", None)
+        if cached is None:
+            cached = {
+                rigid.index
+                for rigid in (self.model.rigid_bodies if self.model else ())
+                if rigid.mode == MODE_DYNAMIC_BONE
+            }
+            self._dynamic_bone_index_cache = cached
+        return cached
 
     def _apply_drag_dynamic_resync(self):
         if self.native is None or not self._drag_resync_pending:
@@ -1083,6 +1141,7 @@ class PhysicsWorld:
             }
 
     def flush_depsgraph(self):
+        self._kinematic_cache_dirty = True
         view_layer = self._view_layer
         if view_layer is None:
             return
@@ -1097,6 +1156,21 @@ class PhysicsWorld:
         self.flush_depsgraph()
 
     def _current_body_matrices(self, include_dynamic):
+        if not include_dynamic and self._kinematic_cache_safe:
+            # Between substeps nothing a static rigid follows can change:
+            # pose matrices are only refreshed by flush_depsgraph (frame
+            # moves, user transforms) and our apply stage never writes
+            # static-bound bones. Reuse the cached collect instead of
+            # re-evaluating every pose matrix (the dominant collect cost).
+            if self._kinematic_cache is not None and not self._kinematic_cache_dirty:
+                return dict(self._kinematic_cache)
+            collected = self._collect_body_matrices(include_dynamic)
+            self._kinematic_cache = dict(collected)
+            self._kinematic_cache_dirty = False
+            return collected
+        return self._collect_body_matrices(include_dynamic)
+
+    def _collect_body_matrices(self, include_dynamic):
         matrices = {}
         if not include_dynamic:
             # Touch the static-scope helper so debug metrics
@@ -1104,6 +1178,15 @@ class PhysicsWorld:
             # still get published even though we no longer use the result to
             # gate kinematic following.
             self._interaction_affected_static_indices()
+        # Hoisted once per call: inverting the root matrix per rigid body
+        # dominated the collect stage on dense PMX models (300+ bodies).
+        root_inverse = None
+        armature_world = None
+        armature = self.model.armature
+        if self.model.root is not None:
+            root_inverse = self.model.root.matrix_world.inverted_safe()
+        if armature is not None:
+            armature_world = armature.matrix_world
         # Every kinematic STATIC body must follow its current bone matrix on
         # every frame, identical to MMD's behavior. Earlier versions pinned
         # out-of-scope STATIC bodies to the previous frame's kinematic matrix
@@ -1118,7 +1201,9 @@ class PhysicsWorld:
         # themselves.
         for rigid in self.model.rigid_bodies:
             if rigid.mode == MODE_STATIC or include_dynamic:
-                matrices[rigid.index] = self._current_body_matrix(rigid)
+                matrices[rigid.index] = self._current_body_matrix(
+                    rigid, root_inverse, armature_world
+                )
         return matrices
 
     def _rest_body_matrices(self, include_dynamic):
@@ -1128,10 +1213,17 @@ class PhysicsWorld:
                 matrices[rigid.index] = self._rest_body_matrix(rigid)
         return matrices
 
-    def _current_body_matrix(self, rigid):
+    def _current_body_matrix(self, rigid, root_inverse=None, armature_world=None):
         if rigid.bone_name and rigid.bone_offset_matrix is not None:
-            bone_matrix = pmx_data_reader.bone_model_matrix(self.model, rigid.bone_name)
-            if bone_matrix is not None:
+            pose_bone = getattr(rigid, "_pmx_cached_pose_bone", None)
+            if pose_bone is None and armature_world is not None:
+                pose_bone = self.model.armature.pose.bones.get(rigid.bone_name)
+            if pose_bone is not None:
+                if root_inverse is None:
+                    root_inverse = self.model.root.matrix_world.inverted_safe()
+                if armature_world is None:
+                    armature_world = self.model.armature.matrix_world
+                bone_matrix = root_inverse @ armature_world @ pose_bone.matrix
                 return bone_matrix @ rigid.bone_offset_matrix
         return self.model.root.matrix_world.inverted_safe() @ rigid.obj.matrix_world
 
