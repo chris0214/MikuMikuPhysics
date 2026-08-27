@@ -4,6 +4,11 @@
 
 MikuMikuPhysics 是一个 Blender 4.2+ 插件，用于直接模拟由 mmd_tools 导入的 PMX/MMD 模型刚体物理。插件通过外部 `pmx_bullet.dll` 使用 Bullet 2.82 r2704，不依赖 Blender 内置 Bullet，目标是尽量接近 MMD 与 PMXEditor TransformView 的物理行为。
 
+已在以下版本通过完整回归测试（注册、扫描、实时模拟、烘焙，使用真实 PMX 模型）：
+
+- Blender 4.2 – 4.5（原作者支持范围）
+- Blender 5.2.0 LTS（本 fork 实测通过，见 `tests/`）
+
 - 项目地址：<https://github.com/chris0214/MikuMikuPhysics>
 - 作者 / 维护者：克里斯提亚娜
 - 插件类型：Blender Add-on / Extension
@@ -23,6 +28,18 @@ MikuMikuPhysics 是一个 Blender 4.2+ 插件，用于直接模拟由 mmd_tools 
 - 高速拖动保护（Fast Drag Protection），减少拖动模型时的滞后和穿模。
 - 姿态模式交互作用域（Interaction Scope），拖动手臂等骨骼时，头发 / 裙摆等无关物理不受影响，行为接近 MMD 本体。
 - 针对头发、裙摆、尾巴、链条等结构的名称规则参数。
+
+## 测试
+
+`tests/` 内是运行在 Blender 自带 Python 中的回归测试套件（后台模式 + 真实 PMX 模型），覆盖注册、扫描、实时模拟 tick、时间轴模式、烘焙、烘焙进度回调与性能回归：
+
+```bash
+python tests/run_all.py "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe"
+```
+
+- 每个测试模块在独立 Blender 进程中运行（`tests/run_all.py`），因为同一会话内连续烘焙存在 Blender 层面的浮点不确定性。
+- `tests/golden_bake.json` 是优化前烘焙输出的逐位快照；性能优化必须保持与其完全一致（`test_perf.py`）。
+- `tests/_capture_golden.py` 用于在有意改变模拟行为时重新生成黄金基线。
 
 ## 安装
 
