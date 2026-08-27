@@ -2,7 +2,7 @@ bl_info = {
     "name": "MikuMikuPhysics",
     "author": "克里斯提亚娜",
     "maintainer": "克里斯提亚娜",
-    "version": (2, 2, 0),
+    "version": (2, 2, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > MMP",
     "description": "External Bullet 2.82 runtime for mmd_tools PMX rigid bodies",
