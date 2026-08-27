@@ -155,7 +155,13 @@ def compare_baked_motion(context, settings):
     }
 
 
-def bake_to_keyframes(context, settings):
+def bake_frame_total(settings):
+    """Total progress units for a bake: preroll frames plus baked frames."""
+    preroll = int(getattr(settings, "bake_preroll", 0))
+    return preroll + int(settings.bake_end) - int(settings.bake_start) + 1
+
+
+def bake_to_keyframes(context, settings, progress=None):
     scene = context.scene
     start = int(settings.bake_start)
     end = int(settings.bake_end)
@@ -210,17 +216,24 @@ def bake_to_keyframes(context, settings):
 
         scene.frame_set(start)
         world.flush_depsgraph()
-        for _ in range(int(settings.bake_preroll) * substeps_per_frame):
-            world.step(timestep * _time_scale(settings), 1)
+        preroll_frames = int(settings.bake_preroll)
+        for frame_index in range(preroll_frames):
+            for _ in range(substeps_per_frame):
+                world.step(timestep * _time_scale(settings), 1)
+            if progress is not None:
+                progress(frame_index + 1, bake_frame_total(settings), None)
         world.flush_depsgraph()
 
-        for frame in range(start, end + 1):
+        frame_count = end - start + 1
+        for frame_offset, frame in enumerate(range(start, end + 1)):
             scene.frame_set(frame)
             world.flush_depsgraph()
             for _ in range(substeps_per_frame):
                 world.step(timestep * _time_scale(settings), 1)
             world.flush_depsgraph()
             _insert_bone_keyframes(world.model.armature, bone_names)
+            if progress is not None:
+                progress(preroll_frames + frame_offset + 1, bake_frame_total(settings), frame)
     finally:
         world.destroy()
         scene.frame_set(current_frame)
