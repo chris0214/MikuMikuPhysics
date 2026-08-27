@@ -508,12 +508,23 @@ class PMXPHYSICS_OT_bake(bpy.types.Operator):
 
     def execute(self, context):
         settings = _settings(context)
+        window_manager = context.window_manager
+        progress_active = False
         try:
-            count = bake.bake_to_keyframes(context, settings)
+            window_manager.progress_begin(0, bake.bake_frame_total(settings))
+            progress_active = True
+            count = bake.bake_to_keyframes(
+                context,
+                settings,
+                progress=lambda done, _total, _frame: window_manager.progress_update(done),
+            )
         except Exception as exc:
             settings.status = str(exc)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        finally:
+            if progress_active:
+                window_manager.progress_end()
         settings.status = f"{iface_('Baked')} {count} {iface_('frames')}"
         self.report({"INFO"}, settings.status)
         return {"FINISHED"}
