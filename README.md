@@ -34,11 +34,13 @@ MikuMikuPhysics 是一个 Blender 4.2+ 插件，用于直接模拟由 mmd_tools 
 `tests/` 内是运行在 Blender 自带 Python 中的回归测试套件（后台模式 + 真实 PMX 模型），覆盖注册、扫描、实时模拟 tick、时间轴模式、烘焙、烘焙进度回调与性能回归：
 
 ```bash
+# 模型文件不能随仓库分发，先指向任意本地 PMX
+set MMP_TEST_PMX=C:\path\to\model.pmx
 python tests/run_all.py "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe"
 ```
 
 - 每个测试模块在独立 Blender 进程中运行（`tests/run_all.py`），因为同一会话内连续烘焙存在 Blender 层面的浮点不确定性。
-- `tests/golden_bake.json` 是优化前烘焙输出的逐位快照；性能优化必须保持与其完全一致（`test_perf.py`）。
+- `tests/golden_bake.json` 是优化前烘焙输出的逐位快照；性能优化必须保持与其完全一致（`test_perf.py`）。该基线与捕获时使用的模型绑定，换用其他模型时需先用 `tests/_capture_golden.py` 重新生成。
 - `tests/_capture_golden.py` 用于在有意改变模拟行为时重新生成黄金基线。
 
 ## 安装

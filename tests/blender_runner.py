@@ -27,7 +27,15 @@ for path in (ADDON_PARENT, TESTS_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-PMX_PATH = r"F:\help2\【明日方舟：终末地】女管理员_by_茶叶味香皂_ace23a7397b51765922b363785a7e1f1\女管理员.pmx"
+# The suite drives a real PMX model, but model files cannot be redistributed
+# with the repository. Point the MMP_TEST_PMX environment variable at any
+# local PMX file before running the tests.
+PMX_PATH = os.environ.get("MMP_TEST_PMX", "")
+if not os.path.isfile(PMX_PATH):
+    raise RuntimeError(
+        "MMP_TEST_PMX must point to an existing local PMX file "
+        "(model files cannot be shipped with the repository)"
+    )
 
 BLENDER_CONFIG = os.path.join(
     os.environ.get("APPDATA", ""), "Blender Foundation", "Blender", "5.2"
